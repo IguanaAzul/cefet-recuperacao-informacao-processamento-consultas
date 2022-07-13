@@ -1,7 +1,13 @@
-from typing import List, Set, Mapping
+from typing import List, Set, Mapping, Dict
 from nltk.tokenize import word_tokenize
 from util.time import CheckTime
-from query.ranking_models import RankingModel, VectorRankingModel, IndexPreComputedVals
+from query.ranking_models import (
+    RankingModel,
+    VectorRankingModel,
+    IndexPreComputedVals,
+    BooleanRankingModel,
+    OPERATOR,
+)
 from index.structure import Index, TermOccurrence
 from index.indexer import Cleaner
 
@@ -12,7 +18,7 @@ class QueryRunner:
         self.index = index
         self.cleaner = cleaner
 
-    def get_relevance_per_query(self) -> Mapping[str, Set[int]]:
+    def get_relevance_per_query(self) -> Dict[str, Set[int]]:
         """
         Adiciona a lista de documentos relevantes para um determinada query (os documentos relevantes foram
         fornecidos no ".dat" correspondente. Por ex, belo_horizonte.dat possui os documentos relevantes da consulta "Belo Horizonte"
@@ -32,24 +38,13 @@ class QueryRunner:
         Considere que respostas já é a lista de respostas ordenadas por um método de processamento de consulta (BM25, Modelo vetorial).
         Os documentos relevantes estão no parametro docRelevantes
         """
-        # print(f"Respostas: {respostas} doc_relevantes: {doc_relevantes}")
-        relevance_count = 0
-        for i in range(n):
-            try:
-                relevance_count += (
-                    1 if doc_relevantes.intersection({respostas[i]}) else 0
-                )
-            except:
-                break
-        return relevance_count
+        return len(doc_relevantes.intersection(set(respostas[:n])))
 
     def compute_precision_recall(
         self, n: int, lst_docs: List[int], relevant_docs: Set[int]
     ) -> (float, float):
-
-        precision = None
-        recall = None
-        return precision, recall
+        interseccao = self.count_topn_relevant(n, lst_docs, relevant_docs)
+        return interseccao / n, interseccao / len(relevant_docs)
 
     def get_query_term_occurence(self, query: str) -> Mapping[str, TermOccurrence]:
         """
@@ -97,17 +92,21 @@ class QueryRunner:
         dic_query_occur = self.get_query_term_occurence(query)
 
         # obtenha a lista de ocorrencia dos termos da consulta
-        dic_occur_per_term_query = self.get_occurrence_list_per_term(self.cleaner.preprocess_text(query))
+        dic_occur_per_term_query = self.get_occurrence_list_per_term(
+            self.cleaner.preprocess_text(query)
+        )
 
         # utilize o ranking_model para retornar o documentos ordenados considrando dic_query_occur e dic_occur_per_term_query
-        return self.ranking_model.get_ordered_docs(dic_query_occur, dic_occur_per_term_query)
+        return self.ranking_model.get_ordered_docs(
+            dic_query_occur, dic_occur_per_term_query
+        )
 
     @staticmethod
     def runQuery(
         query: str,
         indice: Index,
-        indice_pre_computado: IndexPreComputedVals,
-        map_relevantes: Mapping[str, Set[int]],
+        cleaner: Cleaner,
+        ranking_model: RankingModel,
     ):
         """
         Para um daterminada consulta `query` é extraído do indice `index` os documentos mais relevantes, considerando
@@ -121,46 +120,79 @@ class QueryRunner:
         # PEça para usuario selecionar entre Booleano ou modelo vetorial para intanciar o QueryRunner
         # apropriadamente. NO caso do booleano, vc deve pedir ao usuario se será um "and" ou "or" entre os termos.
         # abaixo, existem exemplos fixos.
-        qr = QueryRunner(indice, VectorRankingModel(indice_pre_computado))
+        qr = QueryRunner(ranking_model, indice, cleaner)
+        map_relevantes = qr.get_relevance_per_query()
         time_checker.print_delta("Query Creation")
 
         # Utilize o método get_docs_term para obter a lista de documentos que responde esta consulta
-        resposta = None
+        resposta, _ = qr.get_docs_term(query)
         time_checker.print_delta("anwered with {len(respostas)} docs")
 
         # nesse if, vc irá verificar se o termo possui documentos relevantes associados a ele
         # se possuir, vc deverá calcular a Precisao e revocação nos top 5, 10, 20, 50.
         # O for que fiz abaixo é só uma sugestao e o metododo countTopNRelevants podera auxiliar no calculo da revocacao e precisao
-        if True:
+        key_query = query.lower().replace(" ", "_")
+        if key_query in map_relevantes.keys():
             arr_top = [5, 10, 20, 50]
-            revocacao = 0
-            precisao = 0
             for n in arr_top:
-                revocacao = 0  # substitua aqui pelo calculo da revocacao topN
-                precisao = 0  # substitua aqui pelo calculo da revocacao topN
-                print("Precisao @{n}: {precisao}")
-                print("Recall @{n}: {revocacao}")
-
-        # imprima aas top 10 respostas
+                precisao, revocacao = qr.compute_precision_recall(n, resposta, map_relevantes[key_query])
+                print(f"Precisao {n}: {precisao}")
+                print(f"Recall {n}: {revocacao}")
+            print(resposta[:10])
 
     @staticmethod
     def main():
-        # leia o indice (base da dados fornecida)
-        index = None
+        index = Index()
+        index = index.read("wiki.idx")
 
-        # Checagem se existe um documento (apenas para teste, deveria existir)
-        print(f"Existe o doc? index.hasDocId(105047)")
-
-        # Instancie o IndicePreCompModelo para pr ecomputar os valores necessarios para a query
-        print("Precomputando valores atraves do indice...")
         check_time = CheckTime()
-
+        cleaner = Cleaner(
+            stop_words_file="stopwords.txt",
+            language="portuguese",
+            perform_stop_words_removal=True,
+            perform_accents_removal=True,
+            perform_stemming=False,
+        )
+        precomput = IndexPreComputedVals(index)
         check_time.print_delta("Precomputou valores")
 
-        # encontra os docs relevantes
-        map_relevance = None
+        tipo = -1
+        while True:
+            try:
+                tipo = int(
+                    input(
+                        "Escolha seu RankingModel, digite o número correspondente\n0 - Boolean\n1 - VectorModel\n"
+                    )
+                )
+                if tipo != 0 and tipo != 1:
+                    print("Entrada inválida, tente novamente\n")
+                break
+            except Exception as e:
+                print("Entrada inválida, tente novamente\n", e)
+                continue
+        if tipo == 0:
+            operator = 0
+            while True:
+                try:
+                    operator = int(
+                        input("Escolha o operador do seu RankingModel\n1 - AND\n2 - OR\n")
+                    )
+                    if operator != 1 and operator != 2:
+                        print("Entrada inválida, tente novamente\n")
+                    break
+                except Exception as e:
+                    print("Entrada inválida, tente novamente\n", e)
+                    continue
+            ranking_model = BooleanRankingModel(OPERATOR(operator))
+        else:
+            ranking_model = VectorRankingModel(precomput)
+        query = ""
+        while True:
+            try:
+                query = str(input("Faça sua consulta\n"))
+                break
+            except Exception as e:
+                print("Entrada inválida, tente novamente\n", e)
+                continue
 
-        print("Fazendo query...")
-        # aquui, peça para o usuário uma query (voce pode deixar isso num while ou fazer um interface grafica se estiver bastante animado ;)
-        query = "São Paulo"
-        runQuery(query, idx, idxPreCom, mapRelevances)
+        QueryRunner.runQuery(query, index, cleaner, ranking_model)

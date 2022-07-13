@@ -9,7 +9,7 @@ from enum import Enum
 class IndexPreComputedVals:
     def __init__(self, index):
         self.index = index
-        self.precompute_vals()
+        self.document_norm, self.doc_count = self.precompute_vals()
 
     def precompute_vals(self):
         """
@@ -17,8 +17,8 @@ class IndexPreComputedVals:
             doc_count: o numero de documentos que o indice possui
             document_norm: A norma por documento (cada termo é presentado pelo seu peso (tfxidf))
         """
-        self.document_norm = {}
-        self.doc_count = self.index.document_count
+        document_norm = {}
+        doc_count = self.index.document_count
         for key, entry in self.index.dic_index.items():
             occ_list = self.index.get_occurrence_list(key)
             for occ in occ_list:
@@ -29,13 +29,14 @@ class IndexPreComputedVals:
                     )
                     ** 2
                 )
-                self.document_norm[occ.doc_id] = (
-                    self.document_norm[occ.doc_id] + tfxidf
-                    if occ.doc_id in self.document_norm
+                document_norm[occ.doc_id] = (
+                    document_norm[occ.doc_id] + tfxidf
+                    if occ.doc_id in document_norm
                     else tfxidf
                 )
-        for doc in self.document_norm.keys():
-            self.document_norm[doc] = self.document_norm[doc] ** 0.5
+        for doc in document_norm.keys():
+            document_norm[doc] = document_norm[doc] ** 0.5
+        return document_norm, doc_count
 
 
 class RankingModel:
